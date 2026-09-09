@@ -31,7 +31,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r indices/requirements.txt
-          playwright install chromium --with-deps
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('indices/requirements.txt') }}
+
+      - name: Install Playwright browser
+        run: |
+          # The hosted runner image ships a Google Chrome apt source that
+          # intermittently serves a Packages index whose hash does not match
+          # its Release file. `--with-deps` runs `apt-get update`, so that
+          # mismatch fails the whole job. Drop the third-party source first,
+          # and fall back to a browser-only install if apt still misbehaves —
+          # the ubuntu-latest image already carries Chromium's shared libs.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -qq || true
+          playwright install --with-deps chromium || playwright install chromium
 
       - name: Fetch All Indicators
         env:
