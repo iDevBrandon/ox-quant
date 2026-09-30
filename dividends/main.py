@@ -34,6 +34,7 @@ import time
 from datetime import datetime, timezone
 
 import pandas as pd
+import requests
 import yfinance as yf
 from dotenv import load_dotenv
 from supabase import Client, create_client
@@ -55,6 +56,7 @@ DIV_SHARD = int(os.getenv("DIV_SHARD", "0"))
 DIV_SHARDS = int(os.getenv("DIV_SHARDS", "1"))
 DIV_UNIVERSE_LIMIT = 500  # only the first N tickers of global500.csv (0 = all); bump this to expand
 DIV_TICKERS = os.getenv("DIV_TICKERS", "").strip()
+DIV_REFETCH = os.getenv("DIV_REFETCH", "").strip().lower() not in ("", "0", "false", "no")
 DIV_SKIP_FILE = os.getenv(
     "DIV_SKIP_FILE", os.path.join(os.path.dirname(__file__), ".div_empty.txt")
 )
@@ -79,6 +81,79 @@ def days_to_frequency(median_days: float) -> str:
 
 def payments_per_year(freq: str) -> int:
     return {"monthly": 12, "quarterly": 4, "semiannual": 2, "annual": 1}.get(freq, 4)
+
+
+NASDAQ_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www.nasdaq.com",
+    "Referer": "https://www.nasdaq.com/",
+}
+
+
+def _parse_mdy(v):
+    """Nasdaq 'MM/DD/YYYY' -> date, or None."""
+    s = str(v or "").strip()
+    if not s or s.upper() == "N/A":
+        return None
+    try:
+        return datetime.strptime(s, "%m/%d/%Y").date()
+    except ValueError:
+        return None
+
+
+def fetch_nasdaq_schedule(ticker: str):
+    """Recent dividend rows from Nasdaq with real ex/pay/record/declaration dates.
+
+    yfinance only exposes ex-dates; Nasdaq carries the payable date per payment,
+    which is what the projected-dividend calendar needs. Returns a list of
+    {ex, pay, record, decl} (dates; pay/record/decl may be None) or [] on any
+    failure — the caller then just leaves pay_date null for that ticker.
+    """
+    url = f"https://api.nasdaq.com/api/quote/{ticker}/dividends?assetclass=stocks"
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=NASDAQ_HEADERS, timeout=10)
+            if r.status_code == 200:
+                rows = (
+                    (((r.json() or {}).get("data") or {}).get("dividends") or {}).get(
+                        "rows"
+                    )
+                    or []
+                )
+                out = []
+                for row in rows:
+                    ex = _parse_mdy(row.get("exOrEffDate"))
+                    if not ex:
+                        continue
+                    out.append(
+                        {
+                            "ex": ex,
+                            "pay": _parse_mdy(row.get("paymentDate")),
+                            "record": _parse_mdy(row.get("recordDate")),
+                            "decl": _parse_mdy(row.get("declarationDate")),
+                        }
+                    )
+                if out:
+                    return out
+        except Exception:
+            pass
+        time.sleep(0.8 * (attempt + 1))
+    return []
+
+
+def _match_nasdaq(ex_date, sched):
+    """The Nasdaq entry whose ex-date is closest to ex_date (within 3 days)."""
+    best, best_diff = None, 4
+    for e in sched:
+        diff = abs((e["ex"] - ex_date).days)
+        if diff < best_diff:
+            best, best_diff = e, diff
+    return best
 
 
 def fetch_dividends(ticker: str):
@@ -115,17 +190,30 @@ def fetch_dividends(ticker: str):
     df["is_special"] = df["amount"] > (2.5 * med)
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    rows = [{
-        "ticker": ticker,
-        "ex_date": ex.date().isoformat(),
-        "amount": round(float(amt), 6),
-        "adjusted_amount": round(float(adj), 6),
-        "frequency": "special" if sp else freq,
-        "is_special": bool(sp),
-        "currency": currency,
-        "source": "yfinance",
-        "updated_at": now_iso,
-    } for ex, amt, adj, sp in zip(df["ex_date"], df["amount"], df["adj_amount"], df["is_special"])]
+    # Nasdaq carries the payable date per payment (yfinance does not); match it to
+    # each ex-date so `dividend_history` can drive a payment-month calendar.
+    nasdaq_sched = fetch_nasdaq_schedule(ticker)
+    rows = []
+    for ex, amt, adj, sp in zip(
+        df["ex_date"], df["amount"], df["adj_amount"], df["is_special"]
+    ):
+        ex_d = ex.date()
+        m = _match_nasdaq(ex_d, nasdaq_sched) if nasdaq_sched else None
+        has_pay = bool(m and m["pay"])
+        rows.append({
+            "ticker": ticker,
+            "ex_date": ex_d.isoformat(),
+            "amount": round(float(amt), 6),
+            "adjusted_amount": round(float(adj), 6),
+            "frequency": "special" if sp else freq,
+            "is_special": bool(sp),
+            "currency": currency,
+            "source": "yfinance+nasdaq" if has_pay else "yfinance",
+            "updated_at": now_iso,
+            "pay_date": m["pay"].isoformat() if has_pay else None,
+            "record_date": m["record"].isoformat() if (m and m["record"]) else None,
+            "declaration_date": m["decl"].isoformat() if (m and m["decl"]) else None,
+        })
 
     # ---- summary (regular payments only) ----
     reg = df[~df["is_special"]].copy()
@@ -217,14 +305,22 @@ def main():
             df = df.head(DIV_UNIVERSE_LIMIT)
         if DIV_SHARDS > 1:                        # disjoint stride for this shard
             df = df.iloc[DIV_SHARD::DIV_SHARDS]
-        done = fetch_done_tickers()
         skip_empty = load_skip_empty()
-        pending = df[~df["Ticker"].isin(done | skip_empty)].reset_index(drop=True)
+        if DIV_REFETCH:
+            # Backfill mode: re-process already-seeded tickers (e.g. to fill in
+            # pay_date on existing rows). Only genuinely no-dividend symbols are
+            # still skipped.
+            done = set()
+            pending = df[~df["Ticker"].isin(skip_empty)].reset_index(drop=True)
+        else:
+            done = fetch_done_tickers()
+            pending = df[~df["Ticker"].isin(done | skip_empty)].reset_index(drop=True)
         batch = pending.head(DIV_LIMIT)
 
         print(
             f"Shard {DIV_SHARD}/{DIV_SHARDS} · this shard's rows {len(df)} · "
             f"already seeded {len(done)} · pending here {len(pending)}"
+            + (" · REFETCH" if DIV_REFETCH else "")
         )
         if batch.empty:
             print("✅ Nothing left for this shard — its partition is fully seeded.")
