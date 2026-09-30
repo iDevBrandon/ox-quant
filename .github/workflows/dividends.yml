@@ -8,6 +8,16 @@ name: Stoxx — Dividend History (yfinance)
 
 on:
   workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Comma-separated tickers to (re)fetch, e.g. LRCX,KO,PEP. Bypasses resume-skip and fills pay_date. Leave blank for the normal universe run."
+        required: false
+        default: ""
+      refetch:
+        description: "Backfill: re-process already-seeded tickers to fill pay_date on existing rows (ignored when 'tickers' is set)."
+        type: boolean
+        required: false
+        default: false
   schedule:
     - cron: "30 6 * * *"        # daily 06:30 UTC (after the EPS job)
 
@@ -29,6 +39,8 @@ jobs:
       DIV_SHARDS:           "4"
       DIV_LIMIT:            "3000"
       DIV_SLEEP:            "1.0"
+      DIV_TICKERS:          ${{ github.event.inputs.tickers }}
+      DIV_REFETCH:          ${{ github.event.inputs.refetch }}
 
     steps:
       - name: Checkout repo
