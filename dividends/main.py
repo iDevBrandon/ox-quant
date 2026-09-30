@@ -30,6 +30,7 @@ Env (.env locally / GitHub Actions secrets):
   python main.py                    # run from the stoxx/ root
 """
 import os
+import random
 import time
 from datetime import datetime, timezone
 
@@ -106,6 +107,37 @@ def _parse_mdy(v):
         return None
 
 
+_NASDAQ_SESSION = None
+
+
+def _new_nasdaq_session():
+    """A requests.Session primed with Nasdaq's bot-mitigation cookies.
+
+    api.nasdaq.com sits behind Akamai and answers a cold client (no ak_bmsc /
+    bm_sv cookies) with 403 or an empty body. Visiting the public site once
+    first sets those cookies, after which the JSON endpoint responds normally.
+    """
+    s = requests.Session()
+    s.headers.update(NASDAQ_HEADERS)
+    for warm in (
+        "https://www.nasdaq.com/",
+        "https://www.nasdaq.com/market-activity/stocks",
+    ):
+        try:
+            s.get(warm, timeout=15)
+        except Exception:
+            pass
+    return s
+
+
+def _get_nasdaq_session(reset: bool = False):
+    """One cookie-primed session reused across tickers (re-primed on demand)."""
+    global _NASDAQ_SESSION
+    if reset or _NASDAQ_SESSION is None:
+        _NASDAQ_SESSION = _new_nasdaq_session()
+    return _NASDAQ_SESSION
+
+
 def fetch_nasdaq_schedule(ticker: str):
     """Recent dividend rows from Nasdaq with real ex/pay/record/declaration dates.
 
@@ -113,11 +145,20 @@ def fetch_nasdaq_schedule(ticker: str):
     which is what the projected-dividend calendar needs. Returns a list of
     {ex, pay, record, decl} (dates; pay/record/decl may be None) or [] on any
     failure — the caller then just leaves pay_date null for that ticker.
+
+    Robustness (vs. the old cold-request version that silently 403'd for most
+    tickers): reuse one cookie-primed session across the run, retry with
+    exponential backoff + jitter, re-prime cookies on 403/429/503 (Akamai bot
+    mitigation / rate limit), honour Retry-After, and log the final status so a
+    persistent gap shows up in the run log instead of a silent null pay_date.
     """
     url = f"https://api.nasdaq.com/api/quote/{ticker}/dividends?assetclass=stocks"
-    for attempt in range(3):
+    last_status = None
+    for attempt in range(5):
+        sess = _get_nasdaq_session()
         try:
-            r = requests.get(url, headers=NASDAQ_HEADERS, timeout=10)
+            r = sess.get(url, timeout=15)
+            last_status = r.status_code
             if r.status_code == 200:
                 rows = (
                     (((r.json() or {}).get("data") or {}).get("dividends") or {}).get(
@@ -138,11 +179,22 @@ def fetch_nasdaq_schedule(ticker: str):
                             "decl": _parse_mdy(row.get("declarationDate")),
                         }
                     )
-                if out:
-                    return out
+                # A 200 with usable rows is the answer; a 200 with no rows is a
+                # genuine "Nasdaq has nothing" — retrying won't change it.
+                return out
+            if r.status_code in (403, 429, 503):
+                ra = r.headers.get("Retry-After")
+                wait = float(ra) if (ra and ra.isdigit()) else 1.5 * (attempt + 1) ** 2
+                time.sleep(min(wait, 30) + random.uniform(0, 1.0))
+                _get_nasdaq_session(reset=True)  # re-prime cookies, then retry
+                continue
         except Exception:
             pass
-        time.sleep(0.8 * (attempt + 1))
+        time.sleep(1.5 * (attempt + 1) + random.uniform(0, 0.8))
+    print(
+        f"    warning: Nasdaq schedule unavailable for {ticker} "
+        f"(last status {last_status}) - pay_date left null"
+    )
     return []
 
 
@@ -286,8 +338,22 @@ def mark_empty(ticker: str) -> None:
 def main():
     if DIV_TICKERS:
         names = [t.strip().upper() for t in DIV_TICKERS.split(",") if t.strip()]
+        if DIV_SHARDS > 1:
+            # Split explicit tickers across shards too, so parallel shards don't
+            # each re-fetch the SAME list (redundant work + concurrent Nasdaq
+            # load). Stride-slice mirrors the CSV path.
+            names = names[DIV_SHARD::DIV_SHARDS]
+        if not names:
+            print(
+                f"Shard {DIV_SHARD}/{DIV_SHARDS}: no explicit tickers fall in this "
+                f"shard's stride - nothing to do."
+            )
+            return
         batch = pd.DataFrame({"Ticker": names, "Name": names, "country": None})
-        print(f"Explicit tickers (bypassing resume-skip): {', '.join(names)}\n")
+        print(
+            f"Shard {DIV_SHARD}/{DIV_SHARDS} - explicit tickers "
+            f"(bypassing resume-skip): {', '.join(names)}\n"
+        )
     else:
         # keep_default_na=False: treat ticker strings like "NA" (Nano Labs),
         # "NULL", "None" as real tickers instead of float NaN (which crashes
