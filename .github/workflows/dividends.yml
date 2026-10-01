@@ -19,7 +19,8 @@ on:
         required: false
         default: false
   schedule:
-    - cron: "30 6 * * *"        # daily 06:30 UTC (after the EPS job)
+    - cron: "30 6 * * *"        # daily 06:30 UTC — seed NEW tickers (resume-skip)
+    - cron: "0 7 * * 0"         # weekly Sun 07:00 UTC — full refetch (refresh existing payers: new payments + pay_date)
 
 jobs:
   dividends:
@@ -40,7 +41,7 @@ jobs:
       DIV_LIMIT:            "3000"
       DIV_SLEEP:            "1.0"
       DIV_TICKERS:          ${{ github.event.inputs.tickers }}
-      DIV_REFETCH:          ${{ github.event.inputs.refetch }}
+      DIV_REFETCH:          ${{ github.event.inputs.refetch == 'true' || github.event.schedule == '0 7 * * 0' }}
 
     steps:
       - name: Checkout repo
