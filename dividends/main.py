@@ -138,21 +138,13 @@ def _get_nasdaq_session(reset: bool = False):
     return _NASDAQ_SESSION
 
 
-def fetch_nasdaq_schedule(ticker: str):
-    """Recent dividend rows from Nasdaq with real ex/pay/record/declaration dates.
+def _nasdaq_rows(url: str):
+    """One Nasdaq dividends endpoint, with retries. Returns (rows, last_status).
 
-    yfinance only exposes ex-dates; Nasdaq carries the payable date per payment,
-    which is what the projected-dividend calendar needs. Returns a list of
-    {ex, pay, record, decl} (dates; pay/record/decl may be None) or [] on any
-    failure — the caller then just leaves pay_date null for that ticker.
-
-    Robustness (vs. the old cold-request version that silently 403'd for most
-    tickers): reuse one cookie-primed session across the run, retry with
-    exponential backoff + jitter, re-prime cookies on 403/429/503 (Akamai bot
-    mitigation / rate limit), honour Retry-After, and log the final status so a
-    persistent gap shows up in the run log instead of a silent null pay_date.
+    rows is the parsed list (possibly empty); last_status is the final HTTP code
+    seen (None on network error). 403/429/503 → re-prime cookies + exponential
+    backoff; a clean 200 (even with no rows) stops retrying.
     """
-    url = f"https://api.nasdaq.com/api/quote/{ticker}/dividends?assetclass=stocks"
     last_status = None
     for attempt in range(5):
         sess = _get_nasdaq_session()
@@ -179,9 +171,7 @@ def fetch_nasdaq_schedule(ticker: str):
                             "decl": _parse_mdy(row.get("declarationDate")),
                         }
                     )
-                # A 200 with usable rows is the answer; a 200 with no rows is a
-                # genuine "Nasdaq has nothing" — retrying won't change it.
-                return out
+                return out, 200
             if r.status_code in (403, 429, 503):
                 ra = r.headers.get("Retry-After")
                 wait = float(ra) if (ra and ra.isdigit()) else 1.5 * (attempt + 1) ** 2
@@ -191,9 +181,33 @@ def fetch_nasdaq_schedule(ticker: str):
         except Exception:
             pass
         time.sleep(1.5 * (attempt + 1) + random.uniform(0, 0.8))
+    return [], last_status
+
+
+def fetch_nasdaq_schedule(ticker: str):
+    """Recent dividend rows from Nasdaq with real ex/pay/record/declaration dates.
+
+    yfinance only exposes ex-dates; Nasdaq carries the payable date per payment,
+    which is what the projected-dividend calendar needs. Returns a list of
+    {ex, pay, record, decl} (dates; pay/record/decl may be None) or [] on any
+    failure — the caller then just leaves pay_date null for that ticker.
+
+    Tries assetclass=stocks first; on a clean 200 with no rows (i.e. not a common
+    stock) falls back to assetclass=etf so ETFs/funds get pay dates too. Nasdaq
+    only covers US-listed symbols, so non-US tickers return [] (pay_date null).
+    """
+    base = f"https://api.nasdaq.com/api/quote/{ticker}/dividends?assetclass="
+    out, status = _nasdaq_rows(base + "stocks")
+    if out:
+        return out
+    # Clean 200 but no stock rows → likely an ETF/fund; try that asset class.
+    if status == 200:
+        out, _ = _nasdaq_rows(base + "etf")
+        if out:
+            return out
     print(
         f"    warning: Nasdaq schedule unavailable for {ticker} "
-        f"(last status {last_status}) - pay_date left null"
+        f"(last status {status}) - pay_date left null"
     )
     return []
 
