@@ -4,15 +4,15 @@ name: Sync Indicators to Supabase
 on:
   schedule:
     # GitHub cron is UTC-only and has no DST. Fire at BOTH candidate times and
-    # let the "gate" job below allow only the one that is 10:00 AM in Toronto:
-    #   14:00 UTC = 10:00 Toronto during EDT (summer)
-    #   15:00 UTC = 10:00 Toronto during EST (winter)
+    # let the "gate" job below allow only the one that is 10:00 AM in New York:
+    #   14:00 UTC = 10:00 New York during EDT (summer)
+    #   15:00 UTC = 10:00 New York during EST (winter)
     - cron: "0 14 * * 1-5"
     - cron: "0 15 * * 1-5"
   workflow_dispatch: # Manual execution
 
 jobs:
-  # Allow the run only when it is 10:00 in America/Toronto (handles DST),
+  # Allow the run only when it is 10:00 in America/New_York (handles DST),
   # or always for manual runs.
   gate:
     runs-on: ubuntu-latest
@@ -21,13 +21,13 @@ jobs:
     steps:
       - id: check
         run: |
-          HOUR=$(TZ=America/Toronto date +%H)
-          echo "Toronto hour: $HOUR (event: ${{ github.event_name }})"
+          HOUR=$(TZ=America/New_York date +%H)
+          echo "New York hour: $HOUR (event: ${{ github.event_name }})"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$HOUR" = "10" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           else
             echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "Not 10:00 AM Toronto — skipping sync."
+            echo "Not 10:00 AM New York — skipping sync."
           fi
 
   run-indicators-sync:
