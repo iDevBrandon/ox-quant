@@ -3,7 +3,7 @@ name: Sync Indicators to Supabase
 
 on:
   schedule:
-    - cron: "30 14,19 * * 1-5" # 1 hour after market open (10:30 AM ET) and 1 hour before close (3:00 PM ET)
+    - cron: "0 14 * * 1-5" # Once per weekday at 10:00 AM Toronto (EDT, 14:00 UTC). Note: GitHub cron is UTC-only; during EST (winter) this fires at 9:00 AM Toronto.
   workflow_dispatch: # Manual execution
 
 jobs:
