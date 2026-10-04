@@ -2,10 +2,10 @@ import os
 import csv
 from dotenv import load_dotenv
 from supabase import create_client
-import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 from ta.momentum import RSIIndicator
+from providers import get_bars  # price-bar chain: US -> Alpaca, foreign -> yfinance
 
 load_dotenv()
 
@@ -223,13 +223,9 @@ STALE_DAYS = 7
 # Functions
 # -----------------------------
 def fetch_stock_data(ticker):
-    try:
-        df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=False)
-        if df.empty: return None
-        return df
-    except Exception as e:
-        print(f"Error fetching {ticker}: {e}")
-        return None
+    # Price bars via provider chain: US -> Alpaca (licensed), foreign -> yfinance,
+    # with yfinance fallback. Returns (df, source) where source is 'alpaca'|'yfinance'|None.
+    return get_bars(ticker)
 
 def calculate_rsi(prices, window=RSI_WINDOW):
     if isinstance(prices, pd.DataFrame):
@@ -277,7 +273,7 @@ def generate_signal(score):
     else: return "HOLD"
 
 def evaluate_stock(ticker):
-    df = fetch_stock_data(ticker)
+    df, source = fetch_stock_data(ticker)
     if df is None or len(df) < RSI_WINDOW: return None
 
     rsi = calculate_rsi(df["Close"])
@@ -294,7 +290,8 @@ def evaluate_stock(ticker):
         "Color": color,
         "Chg90d": chg90d,
         "Score": score,
-        "Signal": signal
+        "Signal": signal,
+        "Source": source,
     }
 
 def prune_stale_signals(days=STALE_DAYS):
@@ -412,6 +409,7 @@ if __name__ == "__main__":
             'chg90d': float(result['Chg90d']),
             'score': int(result['Score']),
             'signal': result['Signal'],
+            'source': result['Source'],
             'updated_at': datetime.now().isoformat(),
         }
         for ticker, result in evaluated.items()
