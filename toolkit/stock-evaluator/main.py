@@ -5,7 +5,7 @@ from supabase import create_client
 import pandas as pd
 from datetime import datetime, timedelta
 from ta.momentum import RSIIndicator
-from providers import get_bars  # price-bar chain: US -> Alpaca, foreign -> yfinance
+from providers import get_bars, prefetch_us  # price-bar chain: US -> Alpaca (batched), foreign -> yfinance
 
 load_dotenv()
 
@@ -356,6 +356,9 @@ if __name__ == "__main__":
         f"\nEvaluating {len(unique_tickers)} unique tickers across "
         f"{len(INDEX_GROUPS)} index(es): {', '.join(INDEX_GROUPS.keys())}\n"
     )
+
+    # Bulk-fetch US bars from Alpaca up front (few multi-symbol calls -> no per-ticker 429s)
+    prefetch_us(unique_tickers)
 
     evaluated: dict[str, dict] = {}
     for t in unique_tickers:

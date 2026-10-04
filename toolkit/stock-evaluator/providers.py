@@ -1,21 +1,22 @@
 """
-Price-bar providers for the signals evaluator.
+Price-bar providers for the signals evaluator (batched Alpaca edition).
 
-Routing (decided per ticker):
+Routing (per ticker):
     US ticker  (no '.' suffix)   -> Alpaca daily bars (IEX feed, free)
     foreign    (has '.' suffix)  -> yfinance
     Alpaca miss / no keys / err  -> yfinance fallback
 
-Why: Alpaca is a licensed, contracted market-data API (no Yahoo ToS exposure, far
-more reliable than yfinance which rate-limits). It only covers US listings, so the
-non-US "Global 500" names (.KS/.T/.HK/.SS/.L/.PA ...) stay on yfinance for now.
+Alpaca is pulled in BULK up front via prefetch_us(): one multi-symbol request per
+~100 tickers instead of one request per ticker. ~600 US names => ~6 calls, which
+never approaches the free tier's 200 req/min limit (the per-ticker version did,
+so ~100 US names were 429'd and fell back to yfinance). Foreign names stay on
+yfinance (Alpaca is US only).
 
 Returns a pandas DataFrame with a tz-naive DatetimeIndex and a 'Close' column
-(plus OHLCV when available) so the existing RSI / sparkline / score logic runs
-unchanged, together with the source name ('alpaca' | 'yfinance') for provenance.
+(plus OHLCV) so the existing RSI / sparkline / score logic runs unchanged, along
+with the source name ('alpaca' | 'yfinance').
 
-Env (optional — without Alpaca keys everything falls back to yfinance, i.e. the
-old behavior is preserved exactly):
+Env (optional — without keys everything falls back to yfinance, old behavior):
     ALPACA_API_KEY_ID
     ALPACA_API_SECRET_KEY
 """
@@ -23,20 +24,20 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
 import yfinance as yf
 
-ALPACA_BARS_URL = "https://data.alpaca.markets/v2/stocks/{symbol}/bars"
-# ~13 months of calendar days so RSI(14) + 90d lookback always have enough bars.
-ALPACA_LOOKBACK_DAYS = 400
-# 'split' = split-adjusted but NOT dividend-adjusted. This avoids fake RSI/%-move
-# spikes around stock splits. (yfinance auto_adjust=False returns raw close, which
-# *does* jump on splits — so this is a small correctness improvement. Switch to
-# 'raw' if you want byte-for-byte parity with the old yfinance behavior.)
-ALPACA_ADJUSTMENT = "split"
+ALPACA_MULTI_BARS_URL = "https://data.alpaca.markets/v2/stocks/bars"
+ALPACA_LOOKBACK_DAYS = 400          # ~13 months: enough for RSI(14) + 90d lookback
+ALPACA_ADJUSTMENT = "split"         # split-adjusted, dividend-unadjusted
+ALPACA_CHUNK = 100                  # symbols per request (well under URL/limit caps)
+ALPACA_PAGE_LIMIT = 10000           # max bars per page (Alpaca cap)
+
+# Module-level cache: original ticker -> daily-bar DataFrame, filled by prefetch_us().
+_ALPACA_CACHE: Dict[str, pd.DataFrame] = {}
 
 
 def _alpaca_keys() -> Tuple[str, str]:
@@ -62,49 +63,84 @@ def to_alpaca_symbol(ticker: str) -> str:
     return ticker.replace("-", ".")
 
 
-def _fetch_alpaca(ticker: str) -> Optional[pd.DataFrame]:
-    key, secret = _alpaca_keys()
-    if not (key and secret):
+def _bars_to_df(arr: List[dict]) -> Optional[pd.DataFrame]:
+    if not arr:
         return None
-    symbol = to_alpaca_symbol(ticker)
-    start = (datetime.now(timezone.utc) - timedelta(days=ALPACA_LOOKBACK_DAYS)).date().isoformat()
+    df = pd.DataFrame(
+        [{"Open": b["o"], "High": b["h"], "Low": b["l"], "Close": b["c"], "Volume": b["v"]} for b in arr],
+        index=pd.to_datetime([b["t"] for b in arr], utc=True),
+    )
+    df.index = df.index.tz_localize(None)
+    return df.sort_index()
+
+
+def prefetch_us(tickers: List[str]) -> None:
+    """Bulk-load US tickers' daily bars from Alpaca into _ALPACA_CACHE.
+
+    One request per ALPACA_CHUNK symbols (paginated). No-op without keys. A chunk
+    that errors (e.g. transient) just leaves its symbols uncached -> they fall back
+    to yfinance in get_bars().
+    """
+    if not alpaca_available():
+        print("[INFO] Alpaca keys absent — all tickers via yfinance.")
+        return
+
+    # alpaca symbol -> original ticker (so cache is keyed by what evaluate_stock passes)
+    sym_to_orig: Dict[str, str] = {}
+    for t in tickers:
+        if is_us_ticker(t):
+            sym_to_orig[to_alpaca_symbol(t)] = t
+    symbols = list(sym_to_orig.keys())
+    if not symbols:
+        return
+
+    key, secret = _alpaca_keys()
     headers = {
         "APCA-API-KEY-ID": key,
         "APCA-API-SECRET-KEY": secret,
         "accept": "application/json",
     }
-    base_params = {
-        "timeframe": "1Day",
-        "start": start,
-        "adjustment": ALPACA_ADJUSTMENT,
-        "feed": "iex",     # free tier
-        "limit": 10000,
-    }
-    url = ALPACA_BARS_URL.format(symbol=symbol)
-    bars: list[dict] = []
-    page_token: Optional[str] = None
-    for _ in range(20):  # pagination guard (1y of daily bars fits in one page)
-        params = dict(base_params)
-        if page_token:
-            params["page_token"] = page_token
-        r = requests.get(url, headers=headers, params=params, timeout=15)
-        if r.status_code != 200:
-            # 401/403 bad key, 404 unknown symbol, 429 rate-limit -> let caller fall back
-            return None
-        body = r.json() or {}
-        page = body.get("bars") or []
-        bars.extend(page)
-        page_token = body.get("next_page_token")
-        if not page_token:
-            break
-    if not bars:
-        return None
-    df = pd.DataFrame(
-        [{"Open": b["o"], "High": b["h"], "Low": b["l"], "Close": b["c"], "Volume": b["v"]} for b in bars],
-        index=pd.to_datetime([b["t"] for b in bars], utc=True),
-    )
-    df.index = df.index.tz_localize(None)  # match yfinance's tz-naive index
-    return df.sort_index()
+    start = (datetime.now(timezone.utc) - timedelta(days=ALPACA_LOOKBACK_DAYS)).date().isoformat()
+
+    raw: Dict[str, List[dict]] = {}
+    chunks = 0
+    for i in range(0, len(symbols), ALPACA_CHUNK):
+        batch = symbols[i:i + ALPACA_CHUNK]
+        page_token: Optional[str] = None
+        while True:
+            params = {
+                "symbols": ",".join(batch),
+                "timeframe": "1Day",
+                "start": start,
+                "adjustment": ALPACA_ADJUSTMENT,
+                "feed": "iex",
+                "limit": ALPACA_PAGE_LIMIT,
+            }
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                r = requests.get(ALPACA_MULTI_BARS_URL, headers=headers, params=params, timeout=30)
+            except Exception as e:  # noqa: BLE001
+                print(f"[WARN] Alpaca batch request failed ({len(batch)} syms): {e}")
+                break
+            if r.status_code != 200:
+                print(f"[WARN] Alpaca batch HTTP {r.status_code} for {len(batch)} syms — those fall back to yfinance")
+                break
+            body = r.json() or {}
+            bars_obj = body.get("bars") or {}       # multi-symbol: {symbol: [bars]}
+            for sym, arr in bars_obj.items():
+                raw.setdefault(sym, []).extend(arr or [])
+            page_token = body.get("next_page_token")
+            if not page_token:
+                break
+        chunks += 1
+
+    for sym, arr in raw.items():
+        df = _bars_to_df(arr)
+        if df is not None and not df.empty:
+            _ALPACA_CACHE[sym_to_orig.get(sym, sym)] = df
+
+    print(f"[INFO] Alpaca prefetch: {len(_ALPACA_CACHE)}/{len(symbols)} US tickers cached in {chunks} chunk(s)")
 
 
 def _fetch_yfinance(ticker: str) -> Optional[pd.DataFrame]:
@@ -116,17 +152,14 @@ def _fetch_yfinance(ticker: str) -> Optional[pd.DataFrame]:
 
 def get_bars(ticker: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """Return (df, source). df has a DatetimeIndex and a 'Close' column, or
-    (None, None) on total failure. source is 'alpaca' or 'yfinance'."""
-    # US -> try Alpaca first (licensed, reliable)
-    if is_us_ticker(ticker) and alpaca_available():
-        try:
-            df = _fetch_alpaca(ticker)
-            if df is not None and not df.empty:
-                return df, "alpaca"
-        except Exception as e:  # noqa: BLE001
-            print(f"[WARN] Alpaca fetch failed for {ticker}: {e}")
+    (None, None). source is 'alpaca' or 'yfinance'. Call prefetch_us() first so
+    US tickers resolve from the Alpaca cache; anything not cached (foreign, no
+    keys, IEX gap, failed chunk) falls back to yfinance."""
+    if is_us_ticker(ticker):
+        df = _ALPACA_CACHE.get(ticker)
+        if df is not None and not df.empty:
+            return df, "alpaca"
 
-    # Foreign, no Alpaca keys, or Alpaca miss -> yfinance
     try:
         df = _fetch_yfinance(ticker)
         if df is not None and not df.empty:
