@@ -106,7 +106,7 @@ Signals are derived from score + trend + RSI:
 Project Structure (Planned)
 css
 Copy code
-stock-evaluator/
+screener/
 ├── data/
 │   └── price_loader.py
 ├── indicators/
@@ -228,7 +228,7 @@ Score combines cheapness (RSI) and trend context to generate actionable signals.
 
    ```bash
    git clone <your-repo-url>
-   cd stock-evaluator
+   cd screener
    ```
 
 2. Create and activate a virtual environment:

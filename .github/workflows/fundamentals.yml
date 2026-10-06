@@ -1,4 +1,4 @@
-name: Stoxx — Fetch Fundamentals
+name: Fundamentals (Oxinion Global 500)
 
 on:
   schedule:
@@ -27,13 +27,13 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: toolkit/stock-evaluator/requirements.txt
+          cache-dependency-path: toolkit/screener/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r toolkit/stock-evaluator/requirements.txt
+        run: pip install -r toolkit/screener/requirements.txt
 
       - name: Run fundamentals evaluator
-        working-directory: toolkit/stock-evaluator
+        working-directory: toolkit/screener
         run: python fundamentals.py
 
       - name: Notify on failure

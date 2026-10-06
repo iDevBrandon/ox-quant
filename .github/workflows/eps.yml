@@ -1,4 +1,4 @@
-name: Stoxx — EPS History (SEC EDGAR)
+name: EPS History (SEC EDGAR)
 
 # Deep Basic EPS (annual + quarterly) from the SEC XBRL companyconcept API.
 # Free, no key, no daily cap. US filers only — non-US tickers are skipped with

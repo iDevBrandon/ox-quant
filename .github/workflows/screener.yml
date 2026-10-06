@@ -1,4 +1,4 @@
-name: Stoxx — Fetch Global 500 Signals
+name: Screener (Oxinion Global 500)
 
 on:
   schedule:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   fetch-signals:
-    name: Run stock-evaluator for Global 500
+    name: Run screener for Global 500
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -28,15 +28,15 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: toolkit/stock-evaluator/requirements.txt
+          cache-dependency-path: toolkit/screener/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r toolkit/stock-evaluator/requirements.txt
+        run: pip install -r toolkit/screener/requirements.txt
 
       - name: Run stock evaluator (IOO)
-        working-directory: toolkit/stock-evaluator
+        working-directory: toolkit/screener
         run: python main.py
 
       - name: Notify on failure
         if: failure()
-        run: echo "::error::stock-evaluator failed — check logs above"
+        run: echo "::error::screener failed — check logs above"

@@ -1,5 +1,5 @@
-# .github/workflows/sync-indicators.yml
-name: Sync Indicators to Supabase
+# .github/workflows/indicators.yml
+name: Indicators (Supabase sync)
 
 on:
   schedule:

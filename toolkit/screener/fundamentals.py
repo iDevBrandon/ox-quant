@@ -3,7 +3,7 @@
 Companion to main.py: main.py refreshes daily technicals (price/RSI/trend)
 into the `signals` table. This script refreshes fundamentals (which only
 change quarterly/annually) into a separate `fundamentals` table on its own,
-slower cadence -- see .github/workflows/stoxx-fundamentals.yml.
+slower cadence -- see .github/workflows/fundamentals.yml.
 
 All ratios are stored as decimal fractions (e.g. 0.15 == 15%), matching
 yfinance's own convention for fields like `returnOnEquity`.

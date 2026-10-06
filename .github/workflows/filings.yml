@@ -1,4 +1,4 @@
-name: Stoxx — Filings (SEC EDGAR XBRL)
+name: Filings (SEC EDGAR XBRL)
 
 # Latest 10-Q core financials (revenue, net income, assets, …) from the SEC
 # XBRL APIs into filings + filing_facts. Free, no key, no daily cap. US filers

@@ -305,7 +305,7 @@ def prune_stale_signals(days=STALE_DAYS):
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     try:
         res = (
-            supabase.table("signals")
+            supabase.table("screener")
             .delete()
             .lt("updated_at", cutoff)
             .execute()
@@ -428,7 +428,7 @@ if __name__ == "__main__":
         rows_to_save = list(all_ticker_data.values())
         print(f"\nSaving {len(rows_to_save)} consolidated ticker records...")
         try:
-            supabase.table("signals").upsert(rows_to_save, on_conflict="ticker").execute()
+            supabase.table("screener").upsert(rows_to_save, on_conflict="ticker").execute()
             for row in rows_to_save:
                 print(f"[INFO] Upserted {row['ticker']} ({row['index_names']})")
             print(f"[INFO] Upserted {len(rows_to_save)} tickers total")

@@ -1,4 +1,4 @@
-name: Stoxx — Dividend History (yfinance)
+name: Dividend History (yfinance)
 
 # Full dividend history from Yahoo Finance via yfinance: raw + split-adjusted
 # per-payment amounts, frequency, special-dividend flags, and a per-ticker
