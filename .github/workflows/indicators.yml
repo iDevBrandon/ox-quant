@@ -3,36 +3,18 @@ name: Indicators (Supabase sync)
 
 on:
   schedule:
-    # GitHub cron is UTC-only and has no DST. Fire at BOTH candidate times and
-    # let the "gate" job below allow only the one that is 10:00 AM in New York:
-    #   14:00 UTC = 10:00 New York during EDT (summer)
-    #   15:00 UTC = 10:00 New York during EST (winter)
-    - cron: "0 14 * * 1-5"
-    - cron: "0 15 * * 1-5"
+    # Once per weekday. GitHub's scheduled runs are frequently delayed by
+    # several hours under load, so we deliberately do NOT gate on a specific
+    # clock hour. The previous "run only when it is 10:00 AM in New York" gate
+    # made every delayed run fail the hour check and skip the sync entirely,
+    # which froze the indicators table. A single daily snapshot is all the
+    # Fear & Greed / VIX / DXY / RSI cards need and the exact time of day does
+    # not matter, so we just run once and let GitHub schedule it whenever.
+    - cron: "0 14 * * 1-5" # nominal 14:00 UTC weekdays (runs later in practice)
   workflow_dispatch: # Manual execution
 
 jobs:
-  # Allow the run only when it is 10:00 in America/New_York (handles DST),
-  # or always for manual runs.
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      proceed: ${{ steps.check.outputs.proceed }}
-    steps:
-      - id: check
-        run: |
-          HOUR=$(TZ=America/New_York date +%H)
-          echo "New York hour: $HOUR (event: ${{ github.event_name }})"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$HOUR" = "10" ]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "Not 10:00 AM New York — skipping sync."
-          fi
-
   run-indicators-sync:
-    needs: gate
-    if: needs.gate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
 
     steps:
