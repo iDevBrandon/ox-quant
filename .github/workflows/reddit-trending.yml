@@ -5,8 +5,13 @@ on:
   schedule:
     # Every day at 22:00 UTC = 6 PM New York in summer (EDT), 5 PM in winter (EST).
     # GitHub often starts scheduled runs late; readers fall back to the latest saved day.
-    - cron: "40 16 * * *" # TEMP test (12:40 Toronto) — revert to "0 22 * * *"
+    - cron: "0 22 * * *"
   workflow_dispatch: # Manual execution
+    inputs:
+      push:
+        description: "Also send the Ticker GO Chart of the Day notification"
+        type: boolean
+        default: false
 
 jobs:
   reddit-trending:
@@ -34,7 +39,7 @@ jobs:
           # Ticker GO "Chart of the Day" notification (sent on scheduled runs only)
           TICKERGO_PUSH_SECRET: ${{ secrets.TICKERGO_PUSH_SECRET }}
         working-directory: trending
-        run: python fetch_reddit_trending.py
+        run: python fetch_reddit_trending.py ${{ inputs.push && '--push' || '' }}
 
       - name: Notify on failure
         if: failure()
