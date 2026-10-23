@@ -31,6 +31,8 @@ jobs:
         env:
           FINANCE_SUPABASE_URL: ${{ secrets.FINANCE_SUPABASE_URL }}
           FINANCE_SUPABASE_SECRET_KEY: ${{ secrets.FINANCE_SUPABASE_SECRET_KEY }}
+          # Ticker GO "Chart of the Day" notification (sent on scheduled runs only)
+          TICKERGO_PUSH_SECRET: ${{ secrets.TICKERGO_PUSH_SECRET }}
         working-directory: trending
         run: python fetch_reddit_trending.py
 

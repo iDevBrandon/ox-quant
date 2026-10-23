@@ -3,6 +3,7 @@ Daily snapshot of the most-mentioned stocks on Reddit, from ApeWisdom.
 
   python fetch_reddit_trending.py            # fetch and save to Supabase (public.reddit_trending)
   python fetch_reddit_trending.py --dry-run  # fetch and print, no database
+  python fetch_reddit_trending.py --push     # also send Ticker GO's "Chart of the Day" (scheduled runs do this anyway)
 
 Source: https://apewisdom.io/api/v1.0/filter/all-stocks (all stock subreddits, last 24h, 100 per page).
 ETFs are kept but flagged with is_etf, from the name (ApeWisdom has no type field).
@@ -22,6 +23,8 @@ import requests
 API = "https://apewisdom.io/api/v1.0/filter/all-stocks/page/{page}"
 PAGES = 1  # 100 tickers per page; the top 100 is plenty
 TABLE = "reddit_trending"
+# Ticker GO sends the "Chart of the Day" notification from this list (api/daily-push.ts in ticker-go).
+TICKERGO_PUSH_URL = "https://tickergo.oxinion.com/api/daily-push"
 
 # ApeWisdom names ETFs like "SPDR S&P 500 ETF Trust", "ProShares UltraPro QQQ", "United States Oil Fund".
 ETF_NAME = re.compile(r"\bETF\b|\bETN\b|\bFund\b|iShares|ProShares|SPDR|Direxion", re.IGNORECASE)
@@ -56,6 +59,7 @@ def fetch(page: int) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="print instead of writing to Supabase")
+    ap.add_argument("--push", action="store_true", help="send the Ticker GO notification even on a manual run")
     args = ap.parse_args()
 
     day = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
@@ -99,7 +103,30 @@ def main() -> int:
     db.table(TABLE).delete().eq("date", day).execute()  # same-day re-run replaces the snapshot
     db.table(TABLE).insert(rows).execute()
     print(f"✅ Saved {len(rows)} rows to public.{TABLE} for {day}")
+
+    # Only the daily scheduled run notifies players, so re-running by hand doesn't send a second alert.
+    if args.push or os.environ.get("GITHUB_EVENT_NAME") == "schedule":
+        push_chart_of_the_day(day, stocks)
     return 0
+
+
+def push_chart_of_the_day(day: str, stocks: list[dict]) -> None:
+    """Hand the fresh list to Ticker GO, which picks the top chartable stock and sends the notification.
+    Never fails the job: the data is already saved."""
+    secret = os.environ.get("TICKERGO_PUSH_SECRET")
+    if not secret:
+        print("ℹ️ TICKERGO_PUSH_SECRET not set: skipped Ticker GO notification")
+        return
+    try:
+        res = requests.post(
+            TICKERGO_PUSH_URL,
+            json={"date": day, "candidates": [{"symbol": r["ticker"], "name": r["name"]} for r in stocks[:10]]},
+            headers={"Authorization": f"Bearer {secret}"},
+            timeout=60,
+        )
+        print(f"📣 Ticker GO push → {res.status_code} {res.text[:300]}")
+    except Exception as e:
+        print(f"⚠️ Ticker GO push failed: {e}")
 
 
 if __name__ == "__main__":
