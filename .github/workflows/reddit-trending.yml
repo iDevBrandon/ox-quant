@@ -3,9 +3,9 @@ name: Reddit trending (Supabase sync)
 
 on:
   schedule:
-    # Every day at 22:00 UTC = 6 PM New York in summer (EDT), 5 PM in winter (EST).
+    # Every day at 22:07 UTC = 6:07 PM New York in summer (EDT), 5 PM in winter (EST).
     # GitHub often starts scheduled runs late; readers fall back to the latest saved day.
-    - cron: "30 4 * * *" # TEMP test: 12:30 AM Toronto (remove after)
+    - cron: "7 22 * * *" # off the hour: GitHub delays more at :00
   workflow_dispatch: # Manual execution
     inputs:
       push:
