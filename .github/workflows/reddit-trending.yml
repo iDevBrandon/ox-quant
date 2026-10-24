@@ -5,7 +5,6 @@ on:
   schedule:
     # Every day at 22:00 UTC = 6 PM New York in summer (EDT), 5 PM in winter (EST).
     # GitHub often starts scheduled runs late; readers fall back to the latest saved day.
-    - cron: "0 22 * * *"
     - cron: "30 4 * * *" # TEMP test: 12:30 AM Toronto (remove after)
   workflow_dispatch: # Manual execution
     inputs:
