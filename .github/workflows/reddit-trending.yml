@@ -5,7 +5,9 @@ on:
   schedule:
     # Every day at 22:07 UTC = 6:07 PM New York in summer (EDT), 5 PM in winter (EST).
     # GitHub often starts scheduled runs late; readers fall back to the latest saved day.
-    - cron: "7 22 * * *" # off the hour: GitHub delays more at :00
+    # TEMP (push test, 10/26): 08:07 UTC = 4:07 AM Toronto, so the ~2h GitHub delay still lands before 8 AM.
+    # Put back to "7 22 * * *" after the test.
+    - cron: "7 8 * * *"
   workflow_dispatch: # Manual execution
     inputs:
       push:
